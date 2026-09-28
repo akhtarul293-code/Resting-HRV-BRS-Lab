@@ -2,25 +2,16 @@
 
 A browser-based research prototype for resting ECG and continuous blood pressure. It lets you inspect detected R peaks and beat-level pressure values, adjust quality-control thresholds, select a window, and export an audit-friendly CSV. Recordings are read and analyzed in your browser; this project has no upload API or database.
 
-## Open the application
-
-### **[Launch Resting HRV & BRS Lab](https://akhtarul293-code.github.io/Resting-HRV-BRS-Lab/)**
-
-No installation or account is required. Recordings are processed locally in the browser tab and are not sent to this repository.
-
 ## Important disclaimer
 
 **Research and educational use only. This is not a medical device and must not be used for diagnosis, treatment, or clinical decisions.** The detection and QC methods are a prototype validated only with synthetic data and unit tests. They have not been benchmarked against annotated real ECG or continuous-BP recordings. Inspect R peaks, pressure calibration and alignment, rejected beats, and analysis windows before using results in a study. Spontaneous sequence BRS describes association between SBP and the following RR interval; it does not establish reflex causality. Follow your institution's ethics and data-governance requirements for real recordings.
 
-## How to use the application
+## Use the site
 
-1. Open the **[live application](https://akhtarul293-code.github.io/Resting-HRV-BRS-Lab/)**.
-2. Select **Try synthetic example** to explore the complete workflow without choosing a recording.
-3. For your own data, choose separate ECG and continuous-BP `.csv`, `.tsv`, or numeric `.txt` files. Select the correct time and signal columns. For files without a time column, enter the sample rate (default 1,000 Hz).
-4. Set a BP time offset if the files have different start times. Set the BP pulse delay to associate the pressure wave with the correct R–R interval; the default is 180 ms.
-5. Choose the final five minutes or a custom interval. Review the plotted signals, detected R peaks, pressure extrema and rejected beats.
-6. Click a detected R peak to remove it, click a missed R wave to add it, or reject an individual beat from the table.
-7. Download the CSV containing summary metrics, settings and the complete beat-level QC log.
+1. Choose separate ECG and BP `.csv`, `.tsv`, or numeric `.txt` files. The site accepts a single amplitude/pressure column or a time plus signal column; select the correct columns in the UI. Header and metadata lines such as `Interval=` are skipped. For files without a time column, enter the sample rate (default 1,000 Hz). Select seconds or milliseconds for explicit time columns.
+2. Set a BP time offset if the files have different start times. Set the BP pulse delay to associate the pressure wave with the correct R–R interval; the default is 180 ms.
+3. Choose the final five minutes or a custom interval. Review the plotted ECG and BP traces and the beat flags. Click an R peak to remove it or click a missed peak to add it. You can reject individual beats in the table.
+4. Download the CSV for metric summaries, settings, and a complete beat-level QC log. **Try synthetic example** loads a sample recording without any files.
 
 Example ECG file:
 
@@ -40,7 +31,7 @@ time_s,bp_mmHg
 0.002,78.2
 ```
 
-The time axes must represent the same recording clock after the selected BP offset. Pressure values must be in **mmHg**. Files stay on the user's device; the browser processes them in memory. The downloaded CSV is saved only when the user selects Download. Do not commit participant recordings to this repository.
+The time axes must represent the same recording clock after the selected BP offset. Pressure values must be in **mmHg**. Files stay on the user's device; the browser processes them in memory. The downloaded CSV is saved only when the user selects Download.
 
 ## What is calculated
 
@@ -65,11 +56,15 @@ python3 -m http.server 8000 -d dist
 
 Open <http://localhost:8000>. No `npm install` is required: the site and tests have no third-party JavaScript dependencies. Use a local HTTP server because ES modules are restricted under `file://` in browsers.
 
-## For developers and contributors
+## Host on GitHub Pages
 
-The application uses plain HTML, CSS and JavaScript, with no third-party runtime dependencies. Clone or download the repository, install [Node.js 22 or newer](https://nodejs.org/), and use the local commands above. Pull requests should retain the browser-local data model, visible disclaimer and synthetic validation tests.
+The repository is **ready to upload without editing code**. Extract the ZIP and upload all contents, including the hidden `.github` directory, to the root of a GitHub repository. The included workflow builds, tests and deploys the site. Relative asset paths work for both project sites (`username.github.io/repository/`) and user sites.
 
-The included `.github/workflows/pages.yml` workflow runs the tests, builds `dist/` and deploys the static files to GitHub Pages when manually started from the Actions tab.
+1. In the repository, open **Settings → Pages** and set **Build and deployment → Source** to **GitHub Actions**.
+2. When you have decided on site visibility, open **Actions → Deploy HRV–BRS Lab to GitHub Pages → Run workflow**. Deployment is manual by design; uploading the files alone will not publish the page.
+3. GitHub will show the URL in the workflow's `github-pages` environment and under **Settings → Pages**. No code edits, secrets or API keys are required.
+
+**Privacy:** a private GitHub repository does **not** by itself make the Pages website private. Ordinary GitHub Pages sites are generally public; private Pages access depends on eligible enterprise settings. Keep using the existing owner-only Sites deployment if access to the website must remain private. Never commit patient recordings to the repository. The browser-local processing design does not itself restrict who may visit a GitHub Pages URL. See [GitHub's Pages publishing and visibility guidance](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site).
 
 ## Project files
 
