@@ -79,6 +79,8 @@ export function detectRPeaks(ecg){
 
 // Pulse feet are found from the positive slope-sum function of low-pass BP,
 // independently of ECG; ECG is used only after pulse detection for alignment.
+// The DBP search is intentionally wider than the upstroke trigger so slow
+// downslopes and delayed troughs are not missed.
 export function detectBPPulses(bp,settings=DEFAULTS){
   const c={...DEFAULTS,...settings},{values,times,fs}=bp,n=values.length;
   if(n<fs*3)throw Error('Continuous BP recording must contain at least three seconds.');
@@ -101,33 +103,41 @@ export function detectBPPulses(bp,settings=DEFAULTS){
     if(isAbove&&!above&&i-last>=c.rrMin/1000*fs){
       const lo=Math.max(0,i-Math.round(.15*fs));let foot=lo;
       for(let k=lo+1;k<=i;k++)if(smooth[k]<smooth[foot])foot=k;
-      if(!onsets.length||times[foot]-times[onsets.at(-1)]>=c.rrMin/1000){onsets.push(foot);last=i;}
+      if(!onsets.length||times[foot]-times[onsets.at(-1).foot]>=c.rrMin/1000){onsets.push({foot,trigger:i});last=i;}
+      else if(smooth[foot]<smooth[onsets.at(-1).foot])onsets[onsets.length-1]={foot,trigger:i};
     }
     above=isAbove;
   }
+  const intervals=[];for(let i=1;i<onsets.length;i++)intervals.push(onsets[i].foot-onsets[i-1].foot);
+  const medianInterval=median(intervals.length?intervals:[Math.round(fs)]);
   const pulses=[];
-  for(let i=0;i<onsets.length-1;i++){
-    const foot=onsets[i],end=onsets[i+1],peakEnd=Math.min(end,foot+Math.round(.3*fs));
+  for(let i=0;i<onsets.length;i++){
+    const foot=onsets[i].foot,trigger=onsets[i].trigger,end=i<onsets.length-1?onsets[i+1].foot:Math.min(n-1,foot+Math.round(medianInterval));
+    const peakEnd=Math.min(end,foot+Math.round(.35*fs));
     if(peakEnd<=foot+1)continue;
     let peak=foot;for(let k=foot+1;k<peakEnd;k++)if(smooth[k]>smooth[peak])peak=k;
+    let dbpIndex=foot;
+    const dbpLo=Math.max(0,trigger-Math.round(.25*fs)),dbpHi=Math.min(peak,trigger);
+    for(let k=dbpLo;k<=dbpHi;k++)if(smooth[k]<smooth[dbpIndex])dbpIndex=k;
     let area=0,duration=0;
-    for(let k=foot;k<end;k++){const dt=times[k+1]-times[k];area+=(smooth[k]+smooth[k+1])*.5*dt;duration+=dt;}
-    const sbp=smooth[peak],dbp=smooth[foot],pp=sbp-dbp;
-    if(pp<c.ppMin)continue;
-    pulses.push({time:times[foot],footIndex:foot,sbpTime:times[peak],dbpTime:times[foot],sbp,dbp,map:area/duration,pp});
+    for(let k=dbpIndex;k<end;k++){const dt=times[k+1]-times[k];area+=(smooth[k]+smooth[k+1])*.5*dt;duration+=dt;}
+    const sbp=smooth[peak],dbp=smooth[dbpIndex],pp=sbp-dbp;
+    if(pp<c.ppMin||!(duration>0))continue;
+    pulses.push({time:times[foot],matchTime:Math.max(times[foot],times[peak]-.22),footIndex:foot,dbpIndex,sbpTime:times[peak],dbpTime:times[dbpIndex],sbp,dbp,map:area/duration,pp});
   }
   return pulses;
 }
+
 
 export function extractBeats(ecg,bp,peaks,settings=DEFAULTS){
   const c={...DEFAULTS,...settings},beats=[],pulses=detectBPPulses(bp,c);
   let cursor=0;
   for(let i=0;i<peaks.length-1;i++){
     const r=peaks[i],next=peaks[i+1], rr=(next.time-r.time)*1000;
-    while(cursor<pulses.length&&pulses[cursor].time<r.time)cursor++;
+    while(cursor<pulses.length&&(pulses[cursor].matchTime??pulses[cursor].time)<r.time)cursor++;
     let best=-1,error=Infinity;
-    for(let k=cursor;k<pulses.length&&pulses[k].time<=Math.min(next.time,r.time+c.bpMatchMax/1000);k++){
-      const delta=Math.abs(pulses[k].time-r.time-c.bpDelay/1000);
+    for(let k=cursor;k<pulses.length&&(pulses[k].matchTime??pulses[k].time)<=Math.min(next.time,r.time+c.bpMatchMax/1000);k++){
+      const delta=Math.abs((pulses[k].matchTime??pulses[k].time)-r.time-c.bpDelay/1000);
       if(delta<error){best=k;error=delta;}
     }
     const pulse=best>=0?pulses[best]:null;
