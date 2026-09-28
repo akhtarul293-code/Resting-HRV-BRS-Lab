@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {DEFAULTS,parseSignal,detectRPeaks,analyze,synthetic,sequenceBRS,metrics,applyQC} from '../engine.js';
+import {DEFAULTS,parseSignal,detectRPeaks,detectBPPulses,analyze,synthetic,sequenceBRS,metrics,applyQC,extractBeats} from '../engine.js';
 
 test('parser skips LabChart metadata and preserves sample timing',()=>{
   const x=parseSignal('Interval= 0.01 s\n0.0,1\n0.01,2\n0.02,3\n'+Array.from({length:120},(_,i)=>`${(i+3)*.01},${i}`).join('\n'),{valueColumn:1,timeColumn:0});
@@ -17,6 +17,9 @@ test('synthetic ECG peaks and BP metrics are recovered over a five-minute window
   assert.ok(a.summary.hrv.rmssd>0);
   assert.ok(Number.isFinite(a.summary.hrv.lf));
   assert.ok(a.summary.brs.count>0);
+  assert.ok(a.summary.matched/a.summary.n>.98);
+  assert.ok(Number.isFinite(a.summary.bpv.sbpLF));
+  assert.equal(new Set(a.beats.map(b=>b.footTime)).size,a.summary.matched);
 });
 test('QC rejects pressure spikes and adjacent HRV differences do not bridge gaps',()=>{
   const b=Array.from({length:8},(_,i)=>({i,time:i,rr:800+i*4,sbp:120,dbp:75,map:90,pp:45,score:1,accepted:true,flags:[]}));
@@ -26,8 +29,28 @@ test('QC rejects pressure spikes and adjacent HRV differences do not bridge gaps
   const m=metrics(b);assert.equal(m.accepted,7);
   assert.ok(m.hrv.rmssd<10);
 });
-test('sequence BRS requires three lagged pairs and estimates known slope',()=>{
+test('overlapping sequence BRS requires three lagged pairs and estimates known slope',()=>{
   const b=[100,102,104,106,108].map((sbp,i)=>({i,time:i,rr:800+i*10,sbp,accepted:true}));
-  const r=sequenceBRS(b);assert.equal(r.count,1);assert.ok(Math.abs(r.meanSlope-5)<1e-8);
+  const r=sequenceBRS(b);assert.equal(r.count,2);assert.ok(Math.abs(r.meanSlope-5)<1e-8);
   b[2].accepted=false;assert.equal(sequenceBRS(b).count,0);
+});
+test('BP pulse feet are detected independently and matched once to a following ECG pulse',()=>{
+  const s=synthetic(20,250),peaks=detectRPeaks(s.ecg),pulses=detectBPPulses(s.bp);
+  assert.ok(pulses.length>=18);assert.ok(pulses.every(p=>p.pp>=DEFAULTS.ppMin&&p.map>p.dbp&&p.sbp>p.map));
+  const beats=extractBeats(s.ecg,s.bp,peaks);
+  assert.equal(new Set(beats.filter(b=>Number.isFinite(b.footTime)).map(b=>b.footTime)).size,beats.filter(b=>Number.isFinite(b.footTime)).length);
+  assert.ok(beats.every(b=>!Number.isFinite(b.footTime)||(b.footTime>=b.time&&b.footTime<=b.time+.5)));
+});
+test('BRS-only drift rejection retains BPV and missing BP does not discard ECG-only HRV',()=>{
+  const b=Array.from({length:80},(_,i)=>({i,time:i,rr:800+i%3,sbp:120,dbp:80,map:93,pp:40,footTime:i+.1,score:1}));
+  b[40].sbp=136;b[40].pp=56;
+  applyQC(b);assert.ok(b[40].driftRejected);assert.ok(b[40].accepted);assert.ok(!b[40].brsAccepted);
+  const withDrift=metrics(b);assert.ok(withDrift.bpv.sbpSD>1);
+  b[5].sbp=b[5].dbp=b[5].map=b[5].pp=NaN;applyQC(b);
+  assert.ok(b[5].ecgAccepted&&!b[5].accepted);
+  assert.equal(metrics(b).ecgAccepted,80);
+});
+test('coherence-gated alpha is estimated for a coupled LF synthetic series',()=>{
+  const b=Array.from({length:340},(_,i)=>({i,time:i,rr:1000+80*Math.sin(2*Math.PI*.1*(i-1)),sbp:120+10*Math.sin(2*Math.PI*.1*i),sbpDetrended:120+10*Math.sin(2*Math.PI*.1*i),dbp:80,map:94,pp:40,footTime:i+.15,accepted:true,ecgAccepted:true,brsAccepted:true}));
+  const m=metrics(b);assert.ok(m.brs.coverageLF>.3);assert.ok(m.brs.alphaLF>5&&m.brs.alphaLF<12);
 });

@@ -1,0 +1,22 @@
+# Methods, differences, and validation
+
+This browser engine was refined using the user-supplied `hrv_bpv_brs_analysis.py` protocol as a reference. The original Python script is not included in this public repository: it contains environment-specific Google Drive paths and requires NeuroKit2, WFDB, SciPy, pandas and plotting libraries. This site instead runs entirely in a browser with no recording upload endpoint. The two implementations should **not** be treated as numerically interchangeable.
+
+| Reference Python concept | Browser implementation |
+| --- | --- |
+| WFDB/TXT ingest and header sampling rate | Separate numeric CSV/TSV/TXT ECG and BP files. The user selects columns, sampling rate if absent, and BP time offset. WFDB binary is not supported. |
+| NeuroKit ECG cleaning, primary and Pan–Tompkins agreement | Local moving-baseline derivative-energy R detector, 300 ms refractory interval, manual plot editing, RR range/deviation and amplitude QC. Independent-detector agreement and NeuroKit ECG-quality scores are **not available** in this browser version. |
+| BP low-pass, slope-sum pulse feet, SBP/DBP/MAP/PP | One-pole 15 Hz low-pass and positive-slope-sum pulse feet. SBP is the maximum within 300 ms or until next foot, DBP is the foot pressure, MAP is a time-weighted mean between successive feet, PP is SBP minus DBP. Reject pulse candidates below PP threshold. One-pole filtering is not the reference Butterworth filter. |
+| ECG/BP alignment | Each R peak anchors the interval that starts there. The algorithm matches a subsequent BP foot within the user-set maximum delay to its nearest expected delay; a pulse cannot be assigned twice. This avoids the reference script's nearest-*absolute*-onset and reuse risks. |
+| SBP rolling-median drift exclusion | A centered 61-beat baseline and ±8 mmHg default. The raw SBP still enters BPV; BRS uses detrended SBP and skips drift-flagged beats. Exclusions never collapse time gaps into artificial adjacent pairs. |
+| Time/frequency HRV | Mean HR/NN, sample SDNN, RMSSD, pNN50; 4 Hz interpolated Hann periodogram. Fewer metrics than `neurokit2.hrv`; spectral results withheld when QC/gaps/length are inadequate. |
+| BPV time/frequency | Raw-beat sample SD/CV for SBP/DBP/MAP/PP, SBP ARV for adjacent accepted beats, 4 Hz 256-point Hann Welch LF/HF SBP powers. |
+| Sequence BRS | Overlapping three-pair up/down windows with configurable SBP and RR step thresholds and Pearson *r*. SBP at beat *i* is paired to the **next** RR interval at *i+1*. The supplied Python function used same-index RR and omitted the last possible three-beat window through `i < n - min_len`; the browser makes lag explicit and includes the last valid window. BRS conventions vary; document the chosen lag in any publication. |
+| Alpha BRS | 4 Hz 256-point Hann Welch RR/SBP auto- and cross-spectra, 50% overlap, per-bin coherence ≥0.5 gate; alpha = square root of mean RR PSD over mean SBP PSD for coherent bins only. Withheld for short records, >5 s accepted-beat gaps, or bands with no coherent bins. At least two Welch segments are required so coherence is not trivially one. |
+| Summary QC | `REVIEW` on duration <300 s, match rate <85%, BRS drift exclusions >20% of matched beats, mean HR outside 40–150 bpm, <5 qualifying sequences, or LF coherence coverage <30%. ECG and BP eligibility are separate; an unmatched BP beat does not invalidate its ECG-only HRV interval. |
+
+The reference Python script's `np.isin` time-mask step can lose alignment when timestamps repeat; this implementation keeps exclusions by original beat index. The default PP floor is 10 mmHg and the default maximum BP-foot match is 500 ms. These are configurable research thresholds, not universal physiological guarantees.
+
+## Synthetic verification
+
+`npm test` runs deterministic synthetic checks for CSV timing, ECG R peaks, independent BP pulse detection, one-to-one forward foot matching, plausible SBP/DBP/MAP, RR gap-safe differences, spike rejection, BRS-only drift exclusion with retained BPV, overlapping sequence count and known slope, and LF alpha recovery from a coupled sinusoid. The in-page **Try synthetic example** button exercises plotting, manual review and CSV export. No tests in this repository measure sensitivity/specificity against annotated ECG or clinical BP recordings; inspect every real-data run and conduct external validation before scientific or clinical use.
