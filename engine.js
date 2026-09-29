@@ -51,30 +51,78 @@ function nearestIndex(times,t){
 export function detectRPeaks(ecg){
   const {values:x,times,fs}=ecg, n=x.length;
   if(n<fs*5)throw Error('ECG recording must contain at least five seconds.');
-  const baselineRadius=Math.max(1,Math.round(fs*.08));
-  const prefix=new Float64Array(n+1);for(let i=0;i<n;i++)prefix[i+1]=prefix[i]+x[i];
-  const hp=new Float64Array(n), energy=new Float64Array(n), smooth=new Float64Array(n);
-  for(let i=0;i<n;i++){const a=Math.max(0,i-baselineRadius),b=Math.min(n,i+baselineRadius+1);hp[i]=x[i]-(prefix[b]-prefix[a])/(b-a);}
-  for(let i=1;i<n;i++){const d=hp[i]-hp[i-1];energy[i]=d*d;}
-  const w=Math.max(2,Math.round(fs*.06));let sum=0;
-  for(let i=0;i<n;i++){sum+=energy[i];if(i>=w)sum-=energy[i-w];smooth[i]=sum/Math.min(i+1,w);}
-  const sample=[];for(let i=0;i<n;i+=Math.max(1,Math.round(fs*.025)))sample.push(smooth[i]);
-  const threshold=median(sample)+.23*(quantile(sample,.98)-median(sample));
-  if(!(threshold>0))throw Error('ECG amplitude is flat; no R peaks can be detected.');
-  const candidates=[];let active=false,start=0;
+  // Pan–Tompkins-inspired: zero-phase bandpass, derivative, squaring, 150 ms
+  // integration, locally adaptive energy gate, then raw ECG R-wave location.
+  // This is a browser implementation, not the original 1985 filter/decision
+  // rules or NeuroKit2's pantompkins1985 implementation.
+  const band=new Float64Array(n), low=new Float64Array(n);
+  const lp=1-Math.exp(-2*Math.PI*18/fs),hp=Math.exp(-2*Math.PI*5/fs);
+  let l=x[0],h=0,prev=x[0];
+  for(let i=0;i<n;i++){l+=lp*(x[i]-l);h=hp*(h+l-prev);prev=l;band[i]=h;}
+  l=band[n-1];h=0;prev=band[n-1];
+  for(let i=n-1;i>=0;i--){l+=lp*(band[i]-l);h=hp*(h+l-prev);prev=l;band[i]=h;}
+  const energy=new Float64Array(n),integrated=new Float64Array(n);
+  const step=Math.max(1,Math.round(fs*.008)),width=Math.max(2,Math.round(fs*.15));
+  let sum=0;
+  for(let i=step;i<n;i++){
+    const d=band[i]-band[i-step];energy[i]=d*d;
+    sum+=energy[i];if(i>=width)sum-=energy[i-width];
+    integrated[i]=Math.max(0,sum)/Math.min(i+1,width);
+  }
+  // A separate local threshold prevents a high-amplitude portion of a long
+  // record from hiding later, lower-amplitude QRS complexes.
+  const block=Math.max(1,Math.round(fs*8)),thresholds=[];
+  for(let start=0;start<n;start+=block){
+    const samples=[];for(let i=start;i<Math.min(n,start+block);i+=Math.max(1,Math.round(fs*.025)))samples.push(integrated[i]);
+    const floor=median(samples),high=quantile(samples,.98);
+    thresholds.push(floor+.06*(high-floor));
+  }
+  if(!thresholds.some(t=>t>0))throw Error('ECG amplitude is flat; no R peaks can be detected.');
+  const candidates=[];let active=false,best=0;
   for(let i=0;i<n;i++){
-    if(smooth[i]>threshold&&!active){active=true;start=i;}
-    if(active&&(smooth[i]<=threshold||i===n-1)){
-      const end=i, center=(start+end)>>1, radius=Math.round(fs*.11);
-      let best=Math.max(0,center-radius),score=0;
-      for(let j=Math.max(0,center-radius);j<Math.min(n,center+radius);j++)if(Math.abs(hp[j])>score){score=Math.abs(hp[j]);best=j;}
-      candidates.push({index:best,time:times[best],score});active=false;
+    const above=integrated[i]>thresholds[Math.floor(i/block)];
+    if(above&&!active){active=true;best=i;}
+    if(active&&integrated[i]>integrated[best])best=i;
+    if(active&&(!above||i===n-1)){
+      // The trailing integrator peaks after the QRS. Locate the actual
+      // extremum on the original ECG, with baseline removed over 240 ms.
+      const lo=Math.max(0,best-Math.round(.19*fs)),hi=Math.min(n,best+Math.round(.025*fs));
+      let index=lo,score=0;
+      for(let j=lo;j<hi;j++)if(Math.abs(band[j])>score){score=Math.abs(band[j]);index=j;}
+      candidates.push({index,time:times[index],score,energy:integrated[best]});active=false;
     }
   }
   candidates.sort((a,b)=>a.index-b.index);
-  const peaks=[];const refractory=.3;
-  for(const c of candidates){const p=peaks.at(-1);if(p&&c.time-p.time<refractory){if(c.score>p.score)peaks[peaks.length-1]=c;}else peaks.push(c);}
-  return peaks;
+  const peaks=[];
+  for(const c of candidates){
+    const p=peaks.at(-1);
+    if(p&&c.time-p.time<.3){if(c.energy>p.energy)peaks[peaks.length-1]=c;}
+    else peaks.push(c);
+  }
+  // Reject common T-wave/noise false positives. In resting recordings, a
+  // low-amplitude candidate occurring early after a stronger QRS is usually
+  // not a new cardiac cycle. Keep the larger, sharper event.
+  const rrPruned=[];
+  for(const p of peaks){
+    const prev=rrPruned.at(-1);
+    if(prev&&p.time-prev.time<.48){
+      const keepNew=p.score>prev.score*1.15||p.energy>prev.energy*1.6;
+      if(keepNew)rrPruned[rrPruned.length-1]=p;
+    }else rrPruned.push(p);
+  }
+  if(rrPruned.length<8)return rrPruned;
+  const final=[];
+  for(let i=0;i<rrPruned.length;i++){
+    const lo=Math.max(0,i-5),hi=Math.min(rrPruned.length,i+6);
+    const local=median(rrPruned.slice(lo,hi).map(p=>p.score));
+    const prev=rrPruned[i-1],next=rrPruned[i+1];
+    const premature=prev&&rrPruned[i].time-prev.time<.62;
+    const compensatory=next&&next.time-rrPruned[i].time<.62;
+    const small=rrPruned[i].score<local*.38;
+    if(small&&(premature||compensatory))continue;
+    final.push(rrPruned[i]);
+  }
+  return final;
 }
 
 // Pulse feet are found from the positive slope-sum function of low-pass BP,

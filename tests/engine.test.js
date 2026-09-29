@@ -21,6 +21,44 @@ test('synthetic ECG peaks and BP metrics are recovered over a five-minute window
   assert.ok(Number.isFinite(a.summary.bpv.sbpLF));
   assert.equal(new Set(a.beats.map(b=>b.footTime)).size,a.summary.matched);
 });
+test('QRS detector stays on R waves with broad T waves, baseline drift, and weaker or inverted beats',()=>{
+  for(const fs of [250,1000])for(const polarity of [1,-1]){
+    const duration=20,n=duration*fs,times=Float64Array.from({length:n},(_,i)=>i/fs),values=new Float64Array(n),truth=[];
+    for(let t=.6,k=0;t<duration-.5;t+=.78+.04*Math.sin(k++*.2))truth.push(t);
+    for(let i=0;i<n;i++){
+      const t=times[i];let y=.1*Math.sin(2*Math.PI*.2*t)+.03*Math.sin(2*Math.PI*27*t);
+      for(let k=0;k<truth.length;k++){
+        const d=t-truth[k];if(Math.abs(d)>.5)continue;
+        y+=polarity*(k%5===2?.35:1.1)*Math.exp(-.5*(d/.012)**2)
+          -polarity*.16*Math.exp(-.5*((d-.04)/.023)**2)
+          +polarity*.65*Math.exp(-.5*((d-.27)/.085)**2);
+      }
+      values[i]=y;
+    }
+    const peaks=detectRPeaks({times,values,fs});
+    const matched=truth.filter(t=>peaks.some(p=>Math.abs(p.time-t)<.045));
+    assert.equal(matched.length,truth.length,`Missed R at ${fs} Hz, polarity ${polarity}`);
+    assert.equal(peaks.length,truth.length,`Extra T-wave/noise detections at ${fs} Hz, polarity ${polarity}`);
+  }
+});
+test('QRS detector rejects premature low-amplitude interbeat false peaks',()=>{
+  const fs=1000,duration=22,n=duration*fs,times=Float64Array.from({length:n},(_,i)=>i/fs),values=new Float64Array(n),truth=[];
+  for(let t=.7;t<duration-.7;t+=.82)truth.push(t);
+  for(let i=0;i<n;i++){
+    const t=times[i];let y=.08*Math.sin(2*Math.PI*.25*t)+.025*Math.sin(2*Math.PI*31*t);
+    for(let k=0;k<truth.length;k++){
+      const d=t-truth[k];if(Math.abs(d)>.65)continue;
+      y+=1.05*Math.exp(-.5*(d/.01)**2);
+      y+=.42*Math.exp(-.5*((d-.43)/.018)**2);
+      y+=.35*Math.exp(-.5*((d-.28)/.08)**2);
+    }
+    values[i]=y;
+  }
+  const peaks=detectRPeaks({times,values,fs});
+  const matched=truth.filter(t=>peaks.some(p=>Math.abs(p.time-t)<.04));
+  assert.equal(matched.length,truth.length);
+  assert.equal(peaks.length,truth.length);
+});
 test('QC rejects pressure spikes and adjacent HRV differences do not bridge gaps',()=>{
   const b=Array.from({length:8},(_,i)=>({i,time:i,rr:800+i*4,sbp:120,dbp:75,map:90,pp:45,score:1,accepted:true,flags:[]}));
   b[3].sbp=250;b[3].pp=175;
